@@ -42,9 +42,28 @@ cd C:\Users\MLawali\Documents\Projects\VSTX-Projects\NewClients\UCH-Categorizati
 
 ### Step 2: Run the Script
 
+**Basic usage:**
 ```bash
 python categorize_uch.py
 ```
+
+**With analytics report:**
+```bash
+python categorize_uch.py --analytics
+```
+
+**Custom input/output files:**
+```bash
+python categorize_uch.py --input mydata.xlsx --output results.xlsx
+```
+
+**All options:**
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--input` | `-i` | Input Excel file (default: UCH-2026Data.xlsx) |
+| `--output` | `-o` | Output Excel file (default: UCH-2026Data_Categorized.xlsx) |
+| `--analytics` | `-a` | Generate spend analytics report |
+| `--quiet` | `-q` | Suppress progress output |
 
 ### Step 3: Review Output
 
@@ -94,6 +113,19 @@ The output contains 3 sheets matching the input structure:
 | Taxonomy_L4 | Level 4 category | Elevator Maintenance |
 | Taxonomy_L5 | Level 5 category | (if applicable) |
 | Taxonomy_Key | Full path | Facilities > Facilities Services > Building Maintenance |
+| Match_Method | How the item was categorized | DIRECT, CUSTOM_MAP, etc. |
+
+### Match Method (Audit Trail)
+
+The `Match_Method` column shows how each item was categorized:
+
+| Method | Meaning |
+|--------|---------|
+| `DIRECT` | UNSPSC code matched in detailed taxonomy map |
+| `CUSTOM_MAP` | Internal 99xxxxxx code was mapped to standard UNSPSC |
+| `SEGMENT_FALLBACK` | Used segment-level fallback (first 2 digits of UNSPSC) |
+| `DESCRIPTION_FALLBACK` | Matched via keyword rules on item name/description |
+| `UNMATCHED` | No taxonomy could be assigned |
 
 ## Understanding the Results
 
@@ -144,6 +176,34 @@ The categorized data can be exported to other tools:
 - Power BI: Open Excel file directly
 - Tableau: Connect to Excel data source
 - CSV: Save As > CSV format
+
+## Analytics Report
+
+Run with `--analytics` to generate a spend analysis:
+
+```bash
+python categorize_uch.py --analytics
+```
+
+The report includes:
+
+1. **Match Method Distribution** - How items were categorized
+2. **Spend by Taxonomy L1** - Total spend per top-level category
+3. **Top 15 Taxonomy L2 Categories** - Breakdown by sub-category
+4. **Top 10 Vendors by Spend** - Highest-spend vendors with primary category
+
+Example output:
+```
+=== Match Method Distribution ===
+  DIRECT              : 3,631 (61.7%)
+  CUSTOM_MAP          : 2,246 (38.2%)
+  DESCRIPTION_FALLBACK: 8 (0.1%)
+
+=== Spend by Taxonomy L1 ===
+  Facilities                    : 5,647 txns, $37,598,848 (95.1%)
+  Professional Services         : 62 txns, $1,011,176 (2.6%)
+  ...
+```
 
 ## Troubleshooting
 

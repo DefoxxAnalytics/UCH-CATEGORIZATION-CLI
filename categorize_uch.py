@@ -3,8 +3,12 @@ UCH Spend Categorization Script
 
 Populates UNSPSC columns from Category Name and maps to Healthcare Taxonomy v2.9.
 Extended to support all 5 taxonomy levels.
+
+Usage:
+    python categorize_uch.py [--input FILE] [--output FILE] [--analytics] [--quiet]
 """
 
+import argparse
 import pandas as pd
 import re
 from pathlib import Path
@@ -260,6 +264,33 @@ DESCRIPTION_RULES = [
 ]
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='UCH Spend Categorization - Map procurement data to UNSPSC and Healthcare Taxonomy'
+    )
+    parser.add_argument(
+        '--input', '-i',
+        default='UCH-2026Data.xlsx',
+        help='Input Excel file (default: UCH-2026Data.xlsx)'
+    )
+    parser.add_argument(
+        '--output', '-o',
+        default='UCH-2026Data_Categorized.xlsx',
+        help='Output Excel file (default: UCH-2026Data_Categorized.xlsx)'
+    )
+    parser.add_argument(
+        '--analytics', '-a',
+        action='store_true',
+        help='Generate spend analytics report'
+    )
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Suppress progress output'
+    )
+    return parser.parse_args()
+
+
 def parse_category_name(cat_name):
     if pd.isna(cat_name):
         return None, None
@@ -282,25 +313,26 @@ def get_unspsc_info(code, description):
 
 def get_taxonomy(unspsc_code):
     if unspsc_code is None or str(unspsc_code) == '00000000':
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, False
 
     code_str = str(unspsc_code).zfill(8)
 
     if code_str in DETAILED_TAXONOMY_MAP:
         levels = DETAILED_TAXONOMY_MAP[code_str]
+        used_segment_fallback = False
     else:
         segment = code_str[:2]
         levels = SEGMENT_FALLBACK.get(segment, (None, None, None, None, None))
+        used_segment_fallback = levels[0] is not None
 
     l1, l2, l3, l4, l5 = levels
     parts = [p for p in [l1, l2, l3, l4, l5] if p is not None]
     key = ' > '.join(parts) if parts else None
 
-    return l1, l2, l3, l4, l5, key
+    return l1, l2, l3, l4, l5, key, used_segment_fallback
 
 
 def get_taxonomy_from_description(item_name, item_desc):
-    """Fallback: infer taxonomy from Item Name/Description when UNSPSC is missing."""
     search_text = f"{item_name or ''} {item_desc or ''}".upper()
 
     for keywords, taxonomy, desc in DESCRIPTION_RULES:
@@ -319,9 +351,15 @@ def categorize_dataframe(df):
         cat_name = row.get('Category Name')
         code, desc = parse_category_name(cat_name)
         unspsc_code, unspsc_desc, original_custom = get_unspsc_info(code, desc)
-        l1, l2, l3, l4, l5, key = get_taxonomy(unspsc_code)
+        l1, l2, l3, l4, l5, key, used_segment_fallback = get_taxonomy(unspsc_code)
 
-        # FALLBACK: If uncategorized, try description-based rules
+        if original_custom:
+            match_method = 'CUSTOM_MAP'
+        elif unspsc_code and l1 is not None:
+            match_method = 'SEGMENT_FALLBACK' if used_segment_fallback else 'DIRECT'
+        else:
+            match_method = 'UNMATCHED'
+
         if unspsc_code == '00000000' or l1 is None:
             item_name = row.get('Item Name', '')
             item_desc = row.get('Item Description', '')
@@ -329,6 +367,7 @@ def categorize_dataframe(df):
             if fb_l1 is not None:
                 l1, l2, l3, l4, l5, key = fb_l1, fb_l2, fb_l3, fb_l4, fb_l5, fb_key
                 unspsc_desc = inferred_desc
+                match_method = 'DESCRIPTION_FALLBACK'
 
         results.append({
             'UNSPSC_Code': unspsc_code,
@@ -341,60 +380,134 @@ def categorize_dataframe(df):
             'Taxonomy_L4': l4,
             'Taxonomy_L5': l5,
             'Taxonomy_Key': key,
+            'Match_Method': match_method,
         })
 
     result_df = pd.DataFrame(results)
     return pd.concat([df.reset_index(drop=True), result_df], axis=1)
 
 
-def main():
-    base_path = Path(__file__).parent
+def generate_analytics_report(df):
+    spend_col = None
+    for col in ['Paid Amount', 'Purchase Order Amount', 'Price', 'Amount']:
+        if col in df.columns:
+            spend_col = col
+            break
 
-    print("Loading UCH data...")
-    uch_data = pd.ExcelFile(base_path / 'UCH-2026Data.xlsx')
+    print("\n" + "=" * 60)
+    print("SPEND ANALYTICS REPORT")
+    print("=" * 60)
+
+    print("\n=== Match Method Distribution ===")
+    method_counts = df['Match_Method'].value_counts()
+    total = len(df)
+    for method, count in method_counts.items():
+        pct = count / total * 100
+        print(f"  {method:20s}: {count:,} ({pct:.1f}%)")
+
+    print("\n=== Spend by Taxonomy L1 ===")
+    if spend_col:
+        l1_spend = df.groupby('Taxonomy_L1').agg(
+            Transactions=(spend_col, 'count'),
+            Total_Spend=(spend_col, 'sum')
+        ).sort_values('Total_Spend', ascending=False)
+        total_spend = l1_spend['Total_Spend'].sum()
+        for l1, row in l1_spend.iterrows():
+            pct = row['Total_Spend'] / total_spend * 100 if total_spend > 0 else 0
+            print(f"  {l1:30s}: {row['Transactions']:,} txns, ${row['Total_Spend']:,.0f} ({pct:.1f}%)")
+    else:
+        l1_counts = df['Taxonomy_L1'].value_counts()
+        for l1, count in l1_counts.items():
+            print(f"  {l1:30s}: {count:,} transactions")
+
+    print("\n=== Top 15 Taxonomy L2 Categories ===")
+    if spend_col:
+        l2_spend = df.groupby(['Taxonomy_L1', 'Taxonomy_L2']).agg(
+            Transactions=(spend_col, 'count'),
+            Total_Spend=(spend_col, 'sum')
+        ).sort_values('Total_Spend', ascending=False).head(15)
+        for (l1, l2), row in l2_spend.iterrows():
+            path = f"{l1} > {l2}"
+            print(f"  {path:45s}: ${row['Total_Spend']:,.0f}")
+    else:
+        l2_counts = df.groupby(['Taxonomy_L1', 'Taxonomy_L2']).size().sort_values(ascending=False).head(15)
+        for (l1, l2), count in l2_counts.items():
+            path = f"{l1} > {l2}"
+            print(f"  {path:45s}: {count:,}")
+
+    if 'Supplier' in df.columns and spend_col:
+        print("\n=== Top 10 Vendors by Spend ===")
+        vendor_spend = df.groupby('Supplier').agg(
+            Transactions=(spend_col, 'count'),
+            Total_Spend=(spend_col, 'sum'),
+            Primary_Category=('Taxonomy_L1', lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'Unknown')
+        ).sort_values('Total_Spend', ascending=False).head(10)
+        for vendor, row in vendor_spend.iterrows():
+            vendor_name = str(vendor)[:35]
+            print(f"  {vendor_name:35s}: ${row['Total_Spend']:,.0f} [{row['Primary_Category']}]")
+
+    print("\n" + "=" * 60)
+
+
+def main():
+    args = parse_args()
+    base_path = Path(__file__).parent
+    input_path = base_path / args.input
+    output_path = base_path / args.output
+
+    if not args.quiet:
+        print("Loading UCH data...")
+    uch_data = pd.ExcelFile(input_path)
     services = pd.read_excel(uch_data, sheet_name='Services Only')
     org = pd.read_excel(uch_data, sheet_name='Org Data Pull')
     suppliers = pd.read_excel(uch_data, sheet_name='Supplier Listing')
 
-    print(f"Processing Services Only ({len(services)} rows)...")
+    if not args.quiet:
+        print(f"Processing Services Only ({len(services)} rows)...")
     services_cat = categorize_dataframe(services)
 
-    print(f"Processing Org Data Pull ({len(org)} rows)...")
+    if not args.quiet:
+        print(f"Processing Org Data Pull ({len(org)} rows)...")
     org_cat = categorize_dataframe(org)
 
-    output_path = base_path / 'UCH-2026Data_Categorized.xlsx'
-    print(f"Writing output to {output_path}...")
+    if not args.quiet:
+        print(f"Writing output to {output_path}...")
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         suppliers.to_excel(writer, sheet_name='Supplier Listing', index=False)
         services_cat.to_excel(writer, sheet_name='Services Only', index=False)
         org_cat.to_excel(writer, sheet_name='Org Data Pull', index=False)
 
-    print("\n=== Summary ===")
     all_cat = pd.concat([services_cat, org_cat])
 
-    total = len(all_cat)
-    with_unspsc = all_cat['UNSPSC_Code'].notna().sum()
-    with_l1 = all_cat['Taxonomy_L1'].notna().sum()
-    with_l3 = all_cat['Taxonomy_L3'].notna().sum()
-    with_l4 = all_cat['Taxonomy_L4'].notna().sum()
-    with_l5 = all_cat['Taxonomy_L5'].notna().sum()
-    custom_mapped = all_cat['Original_Custom_Code'].notna().sum()
+    if not args.quiet:
+        print("\n=== Summary ===")
+        total = len(all_cat)
+        with_unspsc = all_cat['UNSPSC_Code'].notna().sum()
+        with_l1 = all_cat['Taxonomy_L1'].notna().sum()
+        with_l3 = all_cat['Taxonomy_L3'].notna().sum()
+        with_l4 = all_cat['Taxonomy_L4'].notna().sum()
+        with_l5 = all_cat['Taxonomy_L5'].notna().sum()
+        custom_mapped = all_cat['Original_Custom_Code'].notna().sum()
 
-    print(f"Total transactions: {total}")
-    print(f"With UNSPSC code: {with_unspsc} ({with_unspsc/total*100:.1f}%)")
-    print(f"With Taxonomy L1: {with_l1} ({with_l1/total*100:.1f}%)")
-    print(f"With Taxonomy L3: {with_l3} ({with_l3/total*100:.1f}%)")
-    print(f"With Taxonomy L4: {with_l4} ({with_l4/total*100:.1f}%)")
-    print(f"With Taxonomy L5: {with_l5} ({with_l5/total*100:.1f}%)")
-    print(f"Custom codes mapped: {custom_mapped}")
+        print(f"Total transactions: {total}")
+        print(f"With UNSPSC code: {with_unspsc} ({with_unspsc/total*100:.1f}%)")
+        print(f"With Taxonomy L1: {with_l1} ({with_l1/total*100:.1f}%)")
+        print(f"With Taxonomy L3: {with_l3} ({with_l3/total*100:.1f}%)")
+        print(f"With Taxonomy L4: {with_l4} ({with_l4/total*100:.1f}%)")
+        print(f"With Taxonomy L5: {with_l5} ({with_l5/total*100:.1f}%)")
+        print(f"Custom codes mapped: {custom_mapped}")
 
-    print("\n=== Top 10 Taxonomy Keys by Transaction Count ===")
-    key_counts = all_cat['Taxonomy_Key'].value_counts().head(10)
-    for key, count in key_counts.items():
-        print(f"  {key}: {count}")
+        print("\n=== Top 10 Taxonomy Keys by Transaction Count ===")
+        key_counts = all_cat['Taxonomy_Key'].value_counts().head(10)
+        for key, count in key_counts.items():
+            print(f"  {key}: {count}")
 
-    print(f"\nDone! Output saved to: {output_path}")
+    if args.analytics:
+        generate_analytics_report(all_cat)
+
+    if not args.quiet:
+        print(f"\nDone! Output saved to: {output_path}")
 
 
 if __name__ == '__main__':

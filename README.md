@@ -25,10 +25,25 @@ pip install pandas openpyxl
 
 # Run categorization
 python categorize_uch.py
+
+# With analytics report
+python categorize_uch.py --analytics
+
+# Custom input/output
+python categorize_uch.py --input data.xlsx --output results.xlsx
 ```
 
-**Input**: `UCH-2026Data.xlsx`
-**Output**: `UCH-2026Data_Categorized.xlsx`
+**Input**: `UCH-2026Data.xlsx` (default)
+**Output**: `UCH-2026Data_Categorized.xlsx` (default)
+
+## CLI Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--input` | `-i` | Input Excel file |
+| `--output` | `-o` | Output Excel file |
+| `--analytics` | `-a` | Generate spend analytics report |
+| `--quiet` | `-q` | Suppress progress output |
 
 ## How It Works
 
@@ -51,6 +66,19 @@ The categorized output adds these columns to transaction sheets:
 | Taxonomy_L3 | Building Maintenance |
 | Taxonomy_L4 | Elevator Maintenance |
 | Taxonomy_Key | Facilities > Facilities Services > Building Maintenance > Elevator Maintenance |
+| Match_Method | DIRECT |
+
+## Match Methods (Audit Trail)
+
+Each row includes a `Match_Method` column for transparency:
+
+| Method | Description |
+|--------|-------------|
+| `DIRECT` | UNSPSC code found in detailed taxonomy map |
+| `CUSTOM_MAP` | Internal 99xxxxxx code mapped to standard UNSPSC |
+| `SEGMENT_FALLBACK` | Used segment-level (first 2 digits) fallback |
+| `DESCRIPTION_FALLBACK` | Matched via keyword rules on item description |
+| `UNMATCHED` | No taxonomy assigned |
 
 ## Top Categories
 
