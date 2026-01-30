@@ -1,0 +1,29 @@
+# Data files (too large / client data)
+*.xlsx
+*.xls
+*.csv
+
+# Output
+UCH-2026Data_Categorized.xlsx
+
+# Archive folder
+archive/
+
+# Claude local settings
+.claude/
+
+# Windows artifacts
+nul
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+# IDE
+.vscode/
+.idea/
